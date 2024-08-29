@@ -1,7 +1,6 @@
 use std::cmp::{self};
 use std::collections::binary_heap::PeekMut;
 use std::collections::BinaryHeap;
-use std::mem;
 
 use anyhow::Result;
 
@@ -76,13 +75,13 @@ impl<I: StorageIterator> MergeIterator<I> {
     }
 }
 
-impl<I: 'static + for<'a> StorageIterator<KeyType<'a>=KeySlice<'a>>> StorageIterator
-for MergeIterator<I>
+impl<I: 'static + for<'a> StorageIterator<KeyType<'a> = KeySlice<'a>>> StorageIterator
+    for MergeIterator<I>
 {
     type KeyType<'a> = KeySlice<'a>;
 
     fn key(&self) -> KeySlice {
-        self.current.as_ref().unwrap().1.key().clone()
+        self.current.as_ref().unwrap().1.key()
     }
 
     fn value(&self) -> &[u8] {
@@ -104,14 +103,21 @@ for MergeIterator<I>
     /// by continuous comparing the current key with the top key in the iters
     /// the sequence of iters ensure the popped iters is the older one
     fn next(&mut self) -> Result<()> {
-        let mut current = self.current.as_mut().unwrap();
-        // deduplicate the key
+        let current = self.current.as_mut().unwrap();
+        // Pop the item out of the heap if they have the same value.
         while let Some(mut inner_iter) = self.iters.peek_mut() {
+            debug_assert!(
+                inner_iter.1.key() >= current.1.key(),
+                "heap invariant violated"
+            );
             if inner_iter.1.key() == current.1.key() {
+                // Case 1: an error occurred when calling `next`.
                 if let e @ Err(_) = inner_iter.1.next() {
                     PeekMut::pop(inner_iter);
                     return e;
                 }
+
+                // Case 2: iter is no longer valid.
                 if !inner_iter.1.is_valid() {
                     PeekMut::pop(inner_iter);
                 }
@@ -119,21 +125,23 @@ for MergeIterator<I>
                 break;
             }
         }
-
         current.1.next()?;
-        // current is now exhausted, pop the top of iters as the successor
+
+        // If the current iterator is invalid, pop it out of the heap and select the next one.
         if !current.1.is_valid() {
             if let Some(iter) = self.iters.pop() {
                 *current = iter;
             }
             return Ok(());
         }
-        // to ensure the ordering of the key
-        if let Some(mut iter) = self.iters.peek_mut() {
-            if *current < *iter {
-                mem::swap(&mut *iter, current)
+
+        // Otherwise, compare with heap top and swap if necessary.
+        if let Some(mut inner_iter) = self.iters.peek_mut() {
+            if *current < *inner_iter {
+                std::mem::swap(&mut *inner_iter, current);
             }
         }
+
         Ok(())
     }
 }

@@ -107,8 +107,8 @@ impl MemTable {
     }
 
     /// Get an iterator over a range of keys.
-    pub fn scan(&self, _lower: Bound<&[u8]>, _upper: Bound<&[u8]>) -> MemTableIterator {
-        let (lower, upper) = (map_bound(_lower), map_bound(_upper));
+    pub fn scan(&self, lower: Bound<&[u8]>, upper: Bound<&[u8]>) -> MemTableIterator {
+        let (lower, upper) = (map_bound(lower), map_bound(upper));
         let mut iter = MemTableIteratorBuilder {
             map: self.map.clone(),
             iter_builder: |map| map.range((lower, upper)),
@@ -141,6 +141,7 @@ impl MemTable {
 
 type SkipMapRangeIter<'a> =
     crossbeam_skiplist::map::Range<'a, Bytes, (Bound<Bytes>, Bound<Bytes>), Bytes, Bytes>;
+
 /// An iterator over a range of `SkipMap`. This is a self-referential structure and please refer to week 1, day 2
 /// chapter for more information.
 ///
@@ -181,7 +182,7 @@ impl StorageIterator for MemTableIterator {
     }
 
     fn next(&mut self) -> Result<()> {
-        let entry = self.with_iter_mut(|iter| MemTableIterator::entry_to_item(iter.next()));
+        let mut entry = self.with_iter_mut(|iter| MemTableIterator::entry_to_item(iter.next()));
         self.with_mut(|x| *x.item = entry);
         Ok(())
     }

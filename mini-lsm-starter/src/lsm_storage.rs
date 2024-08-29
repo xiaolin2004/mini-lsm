@@ -16,9 +16,10 @@ use crate::compact::{
     CompactionController, CompactionOptions, LeveledCompactionController, LeveledCompactionOptions,
     SimpleLeveledCompactionController, SimpleLeveledCompactionOptions, TieredCompactionController,
 };
+use crate::iterators::merge_iterator::MergeIterator;
 use crate::lsm_iterator::{FusedIterator, LsmIterator};
 use crate::manifest::Manifest;
-use crate::mem_table::MemTable;
+use crate::mem_table::{map_bound, MemTable};
 use crate::mvcc::LsmMvccInner;
 use crate::table::SsTable;
 
@@ -333,9 +334,8 @@ impl LsmStorageInner {
     }
 
     /// Remove a key from the storage by writing an empty value.
-    pub fn delete(&self, _key: &[u8]) -> Result<()> {
-        let empty_slice: [u8; 0] = [];
-        self.put(_key, &empty_slice)
+    pub fn delete(&self, key: &[u8]) -> Result<()> {
+        self.put(key, b"")
     }
 
     pub(crate) fn path_of_sst_static(path: impl AsRef<Path>, id: usize) -> PathBuf {
@@ -389,9 +389,22 @@ impl LsmStorageInner {
     /// Create an iterator over a range of keys.
     pub fn scan(
         &self,
-        _lower: Bound<&[u8]>,
-        _upper: Bound<&[u8]>,
+        lower: Bound<&[u8]>,
+        upper: Bound<&[u8]>,
     ) -> Result<FusedIterator<LsmIterator>> {
-        unimplemented!()
+        let snapshot = {
+            let guard = self.state.read();
+            Arc::clone(&guard)
+        };
+
+        let mut memtable_iters = Vec::with_capacity(snapshot.imm_memtables.len() + 1);
+        memtable_iters.push(Box::new(snapshot.memtable.scan(lower, upper)));
+        for memtable in snapshot.imm_memtables.iter() {
+            memtable_iters.push(Box::new(memtable.scan(lower, upper)));
+        }
+        Ok(FusedIterator::new(LsmIterator::new(
+            MergeIterator::create(memtable_iters),
+            map_bound(upper),
+        )?))
     }
 }
