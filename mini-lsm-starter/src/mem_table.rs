@@ -141,7 +141,6 @@ impl MemTable {
 
 type SkipMapRangeIter<'a> =
     crossbeam_skiplist::map::Range<'a, Bytes, (Bound<Bytes>, Bound<Bytes>), Bytes, Bytes>;
-
 /// An iterator over a range of `SkipMap`. This is a self-referential structure and please refer to week 1, day 2
 /// chapter for more information.
 ///
