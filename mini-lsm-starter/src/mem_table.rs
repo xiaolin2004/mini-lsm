@@ -5,10 +5,11 @@ use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Ok, Result};
 use bytes::Bytes;
 use crossbeam_skiplist::map::Entry;
 use crossbeam_skiplist::SkipMap;
+use nom::AsBytes;
 use ouroboros::self_referencing;
 
 use crate::iterators::StorageIterator;
@@ -120,8 +121,18 @@ impl MemTable {
     }
 
     /// Flush the mem-table to SSTable. Implement in week 1 day 6.
-    pub fn flush(&self, _builder: &mut SsTableBuilder) -> Result<()> {
-        unimplemented!()
+    pub fn flush(&self, builder: &mut SsTableBuilder) -> Result<()> {
+        let mut iter = MemTableIterator::new(
+            self.map.clone(),
+            |x| x.range((Bound::Unbounded, Bound::Unbounded)),
+            (Bytes::new(), Bytes::new()),
+        );
+        iter.next()?;
+        while iter.is_valid() {
+            builder.add(iter.key(), iter.value());
+            iter.next()?;
+        }
+        Ok(())
     }
 
     pub fn id(&self) -> usize {
