@@ -11,6 +11,7 @@ use bytes::{BufMut, Bytes};
 use crate::key::{KeyBytes, KeyVec};
 use crate::{block::BlockBuilder, key::KeySlice, lsm_storage::BlockCache};
 
+use super::bloom::Bloom;
 use super::{BlockMeta, FileObject, SsTable};
 
 /// Builds an SSTable from key-value pairs.
@@ -93,6 +94,13 @@ impl SsTableBuilder {
         let metaoffset = buf.len();
         BlockMeta::encode_block_meta(&self.meta, &mut buf);
         buf.put_u32(metaoffset as u32);
+        let bloom = Bloom::build_from_key_hashes(
+            &self.key_hashes,
+            Bloom::bloom_bits_per_key(self.key_hashes.len(), 0.01),
+        );
+        let bloom_offset = buf.len();
+        Bloom::encode(&bloom, &mut buf);
+        buf.put_u32(bloom_offset as u32);
 
         let file = FileObject::create(path.as_ref(), buf)?;
         Ok(SsTable {
@@ -103,7 +111,7 @@ impl SsTableBuilder {
             block_meta: self.meta,
             block_meta_offset: metaoffset,
             block_cache,
-            bloom: None,
+            bloom: Some(bloom),
             max_ts: 0,
         })
     }
