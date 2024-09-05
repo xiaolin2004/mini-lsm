@@ -28,7 +28,7 @@ use crate::iterators::StorageIterator;
 use crate::key::{KeyBytes, KeySlice};
 use crate::lsm_iterator::{FusedIterator, LsmIterator};
 use crate::manifest::Manifest;
-use crate::mem_table::{self, map_bound, MemTable};
+use crate::mem_table::{self, map_bound, MemTable, MemTableIterator};
 use crate::mvcc::LsmMvccInner;
 use crate::table::{bloom, SsTable, SsTableBuilder, SsTableIterator};
 
@@ -394,6 +394,18 @@ impl LsmStorageInner {
         if l0_iter.is_valid() && l0_iter.key().raw_ref() == key && !l0_iter.value().is_empty() {
             return Ok(Some(Bytes::copy_from_slice(l0_iter.value())));
         }
+        let mut l1_tables = Vec::with_capacity(snapshot.levels[0].0);
+        for table in snapshot.levels[0].1.iter() {
+            let table = snapshot.sstables[table].clone();
+            if keep_table(key, &table) {
+                l1_tables.push(table);
+            }
+        }
+        let l1_iter =
+            SstConcatIterator::create_and_seek_to_key(l1_tables, KeySlice::from_slice(key))?;
+        if l1_iter.is_valid() && l1_iter.key().raw_ref() == key && !l1_iter.value().is_empty() {
+            return Ok(Some(Bytes::copy_from_slice(l1_iter.value())));
+        }
         Ok(None)
     }
 
@@ -520,6 +532,7 @@ impl LsmStorageInner {
     /// Create an iterator over a range of keys.
     pub fn scan(
         &self,
+        // lower..upper
         lower: Bound<&[u8]>,
         upper: Bound<&[u8]>,
     ) -> Result<FusedIterator<LsmIterator>> {
@@ -534,7 +547,7 @@ impl LsmStorageInner {
             memtable_iters.push(Box::new(memtable.scan(lower, upper)));
         }
 
-        let mut table_iters = Vec::with_capacity(snapshot.l0_sstables.len());
+        let mut l0_table_iters = Vec::with_capacity(snapshot.l0_sstables.len());
         for idx in snapshot.l0_sstables.iter() {
             let table = snapshot.sstables[idx].clone();
             if range_overlap(
@@ -560,13 +573,28 @@ impl LsmStorageInner {
                     Bound::Unbounded => SsTableIterator::create_and_seek_to_first(table)?,
                 };
 
-                table_iters.push(Box::new(iter));
+                l0_table_iters.push(Box::new(iter));
+            }
+        }
+        let mut l1_tables = Vec::with_capacity(snapshot.levels[0].0);
+        for idx in snapshot.levels[0].1.iter() {
+            let table = snapshot.sstables[idx].clone();
+            if range_overlap(
+                lower,
+                upper,
+                table.first_key().clone(),
+                table.last_key().clone(),
+            ) {
+                l1_tables.push(table);
             }
         }
         Ok(FusedIterator::new(LsmIterator::new(
             TwoMergeIterator::create(
-                MergeIterator::create(memtable_iters),
-                MergeIterator::create(table_iters),
+                TwoMergeIterator::create(
+                    MergeIterator::create(memtable_iters),
+                    MergeIterator::create(l0_table_iters),
+                )?,
+                SstConcatIterator::create_and_seek_to_first(l1_tables)?,
             )?,
             map_bound(upper),
         )?))
