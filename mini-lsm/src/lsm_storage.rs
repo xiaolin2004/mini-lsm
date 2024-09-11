@@ -330,11 +330,12 @@ impl LsmStorageInner {
             ),
             CompactionOptions::NoCompaction => CompactionController::NoCompaction,
         };
-
+        // path不存在，数据库全新启动
         if !path.exists() {
             std::fs::create_dir_all(path).context("failed to create DB dir")?;
         }
         let manifest_path = path.join("MANIFEST");
+        // Manifest文件不存在，全新启动
         if !manifest_path.exists() {
             if options.enable_wal {
                 state.memtable = Arc::new(MemTable::create_with_wal(
@@ -345,7 +346,9 @@ impl LsmStorageInner {
             manifest = Manifest::create(&manifest_path).context("failed to create manifest")?;
             manifest.add_record_when_init(ManifestRecord::NewMemtable(state.memtable.id()))?;
         } else {
+            // Manifest恢复逻辑
             let (m, records) = Manifest::recover(&manifest_path)?;
+            // 模拟memtable的进出过程
             let mut memtables = BTreeSet::new();
             for record in records {
                 match record {

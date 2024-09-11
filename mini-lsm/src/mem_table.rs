@@ -47,10 +47,11 @@ impl MemTable {
 
     /// Create a new mem-table with WAL
     pub fn create_with_wal(id: usize, path: impl AsRef<Path>) -> Result<Self> {
+        let map = Arc::new(SkipMap::new());
         Ok(Self {
             id,
-            map: Arc::new(SkipMap::new()),
-            wal: Some(Wal::create(path.as_ref())?),
+            wal: Some(Wal::recover(path.as_ref(), &map)?),
+            map,
             approximate_size: Arc::new(AtomicUsize::new(0)),
         })
     }

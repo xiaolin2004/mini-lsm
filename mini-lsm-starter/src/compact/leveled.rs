@@ -40,8 +40,11 @@ impl LeveledCompactionController {
 
     pub fn generate_compaction_task(
         &self,
-        _snapshot: &LsmStorageState,
+        snapshot: &LsmStorageState,
     ) -> Option<LeveledCompactionTask> {
+        if snapshot.l0_sstables.len() > self.options.level0_file_num_compaction_trigger {
+            println!("trigger level0_file_num_compaction");
+        }
         unimplemented!()
     }
 

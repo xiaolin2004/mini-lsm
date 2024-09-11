@@ -1,3 +1,9 @@
+use std::{
+    collections::{HashMap, HashSet},
+    hash::Hash,
+};
+
+use clap::builder::NonEmptyStringValueParser;
 use serde::{Deserialize, Serialize};
 
 use crate::lsm_storage::LsmStorageState;
@@ -27,17 +33,109 @@ impl TieredCompactionController {
 
     pub fn generate_compaction_task(
         &self,
-        _snapshot: &LsmStorageState,
+        snapshot: &LsmStorageState,
     ) -> Option<TieredCompactionTask> {
-        unimplemented!()
+        assert!(
+            snapshot.l0_sstables.is_empty(),
+            "should not add l0 ssts in tiered compaction"
+        );
+        if snapshot.levels.len() < self.options.num_tiers {
+            return None;
+        }
+        let space_ampilification_ratio = {
+            let last_level_size = snapshot.levels.last().unwrap().1.len();
+            let engine_size = {
+                let mut temp = 0;
+                for idx in 0..snapshot.levels.len() - 1 {
+                    temp += snapshot.levels[idx].1.len();
+                }
+                temp
+            };
+            engine_size as f64 / last_level_size as f64
+        };
+        if space_ampilification_ratio >= self.options.max_size_amplification_percent as f64 / 100.0
+        {
+            println!(
+                "compaction triggered by space amplification ratio: {}",
+                space_ampilification_ratio
+            );
+            return Some(TieredCompactionTask {
+                tiers: snapshot.levels.clone(),
+                bottom_tier_included: true,
+            });
+        }
+        let size_ratio_trigger = (100.0 + self.options.size_ratio as f64) / 100.0;
+        let mut size = 0;
+        for id in 0..(snapshot.levels.len() - 1) {
+            size += snapshot.levels[id].1.len();
+            let next_level_size = snapshot.levels[id + 1].1.len();
+            let current_size_ratio = size as f64 / next_level_size as f64;
+            if current_size_ratio >= size_ratio_trigger && id + 2 >= self.options.min_merge_width {
+                println!(
+                    "compaction triggered by size ratio: {}",
+                    current_size_ratio * 100.0
+                );
+                return Some(TieredCompactionTask {
+                    tiers: snapshot
+                        .levels
+                        .iter()
+                        .take(id + 2)
+                        .cloned()
+                        .collect::<Vec<_>>(),
+                    bottom_tier_included: id + 2 >= snapshot.levels.len(),
+                });
+            }
+        }
+        let num_iters_to_take = snapshot.levels.len() - self.options.num_tiers + 2;
+        println!("compaction triggered by reducing sorted runs");
+        return Some(TieredCompactionTask {
+            tiers: snapshot
+                .levels
+                .iter()
+                .take(num_iters_to_take)
+                .cloned()
+                .collect::<Vec<_>>(),
+            bottom_tier_included: snapshot.levels.len() >= num_iters_to_take,
+        });
     }
 
     pub fn apply_compaction_result(
         &self,
-        _snapshot: &LsmStorageState,
-        _task: &TieredCompactionTask,
-        _output: &[usize],
+        snapshot: &LsmStorageState,
+        task: &TieredCompactionTask,
+        output: &[usize],
     ) -> (LsmStorageState, Vec<usize>) {
-        unimplemented!()
+        assert!(
+            snapshot.l0_sstables.is_empty(),
+            "should not add l0 ssts in tiered compaction"
+        );
+        let mut snapshot = snapshot.clone();
+        let mut tier_to_remove = task
+            .tiers
+            .iter()
+            .map(|(x, y)| (*x, y))
+            .collect::<HashMap<_, _>>();
+        let mut levels = Vec::new();
+        let mut new_iter_added = false;
+        let mut file_to_remove = Vec::new();
+        for (tier_id, files) in snapshot.levels.iter() {
+            if let Some(ffiles) = tier_to_remove.remove(tier_id) {
+                // check if tier is modified
+                assert_eq!(ffiles, files, "file changed after issuing compaction task");
+                file_to_remove.extend(ffiles.iter().copied());
+            } else {
+                levels.push((*tier_id, files.clone()));
+            }
+            // new tier found
+            if tier_to_remove.is_empty() && !new_iter_added {
+                new_iter_added = true;
+                levels.push((output[0], output.to_vec()));
+            }
+        }
+        if !tier_to_remove.is_empty() {
+            unreachable!();
+        }
+        snapshot.levels = levels;
+        (snapshot, file_to_remove)
     }
 }
